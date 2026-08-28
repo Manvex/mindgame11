@@ -257,5 +257,4 @@
 
   /* ---------- boot ---------- */
   render();
-  if (!NP.store.state.onboarded) NP.showOnboarding();
 })();

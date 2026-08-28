@@ -21,7 +21,9 @@
 - **Search page**: global search across games, categories, skills, achievements + recent searches + trending searches + category browser
 - **Procedural cover artwork**: every one of the **90 games** gets unique generative SVG cover art (grid, wave, constellation, and 25+ game-specific motifs), keyed to its category color
 
-### Games — 90 in catalog, 21 fully playable engines
+### Games — 90 in catalog, 24 fully playable engines
+- **❤️ Universal lives system**: every playable game has hearts — wrong moves / mistakes cost a life; when hearts run out the run ends (some games convert lives into second chances: 2048 clears small tiles, Minesweeper defuses the mine)
+- **🎯 3 difficulty levels in every game**: Easy / Medium / Hard picker before each run — scales grid sizes, timers, sequence speed, mine counts, digit spans, word pools and lives; Hard pays **+35% score/XP**, Easy −20%. Your last choice per game is remembered.
 - **Logic**: Sudoku (6×6 generated), NEURAL 2048 (swipe/keys), Minesweeper (safe-first-click), Tower of Hanoi
 - **Memory**: Memory Match, Sequence Recall, Simon, Number Memory (digit span), Visual Memory (lives)
 - **Focus**: Schulte Table, Stroop Challenge, Reaction Time (5-round ms avg), Find the Target
@@ -42,7 +44,7 @@
 - **16 collectible achievements** (First Spark, 7 Day Streak, Memory Master, Speed Demon, Night Owl, Early Bird, Perfect Run, etc.) with animated unlock popups
 - **Progress page**: Brain Score ring (0–1000), Chart.js cognitive radar (10 skills), weekly XP bar chart, skill breakdown bars, streak calendar, personal records, **AI-style insight cards** ("You're strongest in X", "Growth area: Y", streak nudges)
 - **Profile page**: avatar, level badge, XP bar, strongest/improving skills, 5 stat tiles, full achievement gallery, favorite games (most played), saved library, profile editing, progress reset
-- **Onboarding**: 5-step premium flow (welcome + name → goal → session length → experience style → animated Brain Profile reveal)
+- **No login / no account**: open the app and play instantly — progress is saved automatically in the browser (localStorage); profile is editable from the Profile page
 
 ### Design & UX
 - Dark cinematic design system (#080A0F base, layered surfaces, category accent colors used sparingly)

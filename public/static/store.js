@@ -5,7 +5,7 @@
   const KEY = 'neuroplay:v1';
 
   const defaults = () => ({
-    onboarded: false,
+    onboarded: true,
     profile: { name: 'Player', goal: 'everything', session: '5', style: 'balanced' },
     xp: 0,
     skillXp: {},          // {cat: xp}

@@ -7,14 +7,53 @@
 
   let session = null; // { gameId, startAt, timerInt, paused }
 
+  /* ---------- Difficulty presets ---------- */
+  const DIFFS = {
+    easy:   { id: 'easy',   name: 'Easy',   icon: 'fa-seedling', color: '#34D399', mult: 0.8,  level: 1, desc: 'More lives · relaxed pace' },
+    medium: { id: 'medium', name: 'Medium', icon: 'fa-fire',     color: '#3B82F6', mult: 1,    level: 2, desc: 'Balanced challenge' },
+    hard:   { id: 'hard',   name: 'Hard',   icon: 'fa-skull',    color: '#F43F5E', mult: 1.35, level: 3, desc: 'Fewer lives · max intensity · +35% XP' },
+  };
+  NP.DIFFS = DIFFS;
+
+  function difficultyPicker(game){
+    const cat = NP.CATEGORIES[game.cat];
+    const last = NP.store.state.flags['diff:' + game.id] || 'medium';
+    NP.modal(`
+      <div class="tc">
+        <div class="eyebrow mb-2" style="color:${cat.color}">${NP.esc(cat.name)}</div>
+        <h2 style="font-size:24px" class="mb-2">${NP.esc(game.name)}</h2>
+        <p class="muted mb-5" style="font-size:13px">Choose your difficulty</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          ${Object.values(DIFFS).map(d => `
+            <button class="tile" data-diff="${d.id}" style="aspect-ratio:auto;padding:16px 20px;display:flex;align-items:center;gap:14px;text-align:left;border-radius:16px;${d.id===last ? `box-shadow:inset 0 0 0 2px ${d.color};background:${d.color}14;` : ''}">
+              <span style="width:42px;height:42px;border-radius:12px;background:${d.color}1e;color:${d.color};display:grid;place-items:center;font-size:17px;flex:none"><i class="fa-solid ${d.icon}"></i></span>
+              <span style="flex:1">
+                <span style="display:block;font-family:var(--font-display);font-weight:800;font-size:16px;color:${d.color}">${d.name}</span>
+                <span class="dim" style="font-size:12px">${d.desc}</span>
+              </span>
+              ${d.id===last ? '<i class="fa-solid fa-circle-check" style="color:'+d.color+'"></i>' : ''}
+            </button>`).join('')}
+        </div>
+      </div>`);
+    document.querySelectorAll('#modal-root [data-diff]').forEach(b => b.onclick = () => {
+      const id = b.dataset.diff;
+      NP.store.state.flags['diff:' + game.id] = id;
+      NP.store.save();
+      NP.closeModal();
+      NP.playGame(game.id, id);
+    });
+  }
+
   /* ---------- Launch a game ---------- */
-  NP.playGame = function(gameId){
+  NP.playGame = function(gameId, diffId){
     const game = NP.GAME_INDEX[gameId];
     if (!game) return;
     if (!game.playable){
       NP.comingSoon(game);
       return;
     }
+    if (!diffId){ difficultyPicker(game); return; }
+    const diff = DIFFS[diffId] || DIFFS.medium;
     document.body.style.overflow = 'hidden';
     const root = document.createElement('div');
     root.className = 'play-screen';
@@ -27,10 +66,11 @@
         <button class="icon-btn" id="play-pause" aria-label="Pause"><i class="fa-solid fa-pause"></i></button>
       </div>
       <div class="play-main" id="play-main"></div>
-      <div class="play-bottom" id="play-bottom"></div>`;
+      <div class="play-bottom"><div class="lives" id="play-lives"></div><div id="play-bottom" style="display:flex;align-items:center;justify-content:center;gap:var(--sp-4)"></div></div>`;
     document.body.appendChild(root);
 
-    session = { gameId, startAt: Date.now(), paused: false, cleanup: [] };
+    session = { gameId, startAt: Date.now(), paused: false, cleanup: [], diff };
+    $('#play-hud').insertAdjacentHTML('beforebegin', `<div class="hud-pill" style="color:${diff.color};border-color:${diff.color}44" title="Difficulty"><i class="fa-solid ${diff.icon}"></i><span>${diff.name}</span></div>`);
 
     $('#play-back').onclick = () => confirmExit(game);
     $('#play-pause').onclick = () => pauseMenu(game);
@@ -39,12 +79,44 @@
       main: $('#play-main'),
       bottom: $('#play-bottom'),
       hud: hudApi(),
+      diff,
+      pick: (a, b, c) => diff.level === 1 ? a : diff.level === 3 ? c : b,
+      lives: makeLives,
       finish: (result) => finishGame(game, result),
       onCleanup: fn => session.cleanup.push(fn),
       isPaused: () => session.paused,
     };
     NP.ENGINES[gameId](api, game);
   };
+
+  /* ---------- Standardized lives system ---------- */
+  function makeLives(max, onDead){
+    let left = max;
+    const host = $('#play-lives');
+    function render(){
+      if (!host) return;
+      host.setAttribute('aria-label', left + ' lives left');
+      host.innerHTML = [...Array(max)].map((_, i) =>
+        `<i class="fa-solid fa-heart ${i >= left ? 'lost' : ''}"></i>`).join('');
+    }
+    render();
+    return {
+      get left(){ return left; },
+      lose(){
+        if (left <= 0) return 0;
+        left--;
+        render();
+        if (host){
+          host.style.animation = 'none'; void host.offsetWidth;
+          host.style.animation = 'shake .4s ease';
+        }
+        if (left <= 0 && onDead) setTimeout(onDead, 60);
+        return left;
+      },
+      gain(){ if (left < max){ left++; render(); } return left; },
+      render,
+    };
+  }
 
   function hudApi(){
     const hud = $('#play-hud');
@@ -124,6 +196,10 @@
 
   /* ---------- Results screen ---------- */
   function finishGame(game, result){
+    const diff = session.diff || DIFFS.medium;
+    result.score = Math.round(result.score * diff.mult);
+    if (result.greatAt) result.greatAt = Math.round(result.greatAt * diff.mult);
+    if (result.eliteAt) result.eliteAt = Math.round(result.eliteAt * diff.mult);
     const timeSec = (Date.now() - session.startAt) / 1000;
     const summary = NP.store.recordResult({
       gameId: game.id,
@@ -141,10 +217,12 @@
     const main = $('#play-main');
     $('#play-hud').innerHTML = '';
     $('#play-bottom').innerHTML = '';
+    const lv = $('#play-lives'); if (lv) lv.innerHTML = '';
     session.cleanup.forEach(fn => { try{fn();}catch(e){} });
     session.cleanup = [];
 
     const statCells = [];
+    statCells.push(['Difficulty', `<span style="color:${diff.color}">${diff.name}</span>`]);
     statCells.push(['Time', NP.fmtTime(timeSec)]);
     if (result.accuracy != null) statCells.push(['Accuracy', Math.round(result.accuracy) + '%']);
     if (result.reactionMs) statCells.push(['Avg Reaction', result.reactionMs + 'ms']);
@@ -186,7 +264,7 @@
     NP.countUp($('#rs-score'), result.score, 1100);
     if (rating[0] === 'ELITE' || summary.isPB) setTimeout(() => NP.burst($('#rs-score'), cat.color, 24), 400);
 
-    $('#rs-again').onclick = () => { closePlayScreen(); NP.playGame(game.id); };
+    $('#rs-again').onclick = () => { closePlayScreen(); NP.playGame(game.id, diff.id); };
     $('#rs-next').onclick = () => {
       closePlayScreen();
       const mix = NP.store.ensureDailyMix();
@@ -242,11 +320,16 @@
 
   /* ---------- MEMORY MATCH / ZEN MATCH ---------- */
   function memoryMatchEngine(api, game, zen){
-    const icons = ['fa-star','fa-heart','fa-bolt','fa-moon','fa-fire','fa-gem','fa-leaf','fa-snowflake'];
-    const pairs = zen ? 6 : 8;
+    const icons = ['fa-star','fa-heart','fa-bolt','fa-moon','fa-fire','fa-gem','fa-leaf','fa-snowflake','fa-anchor','fa-bell'];
+    const pairs = zen ? api.pick(4, 6, 8) : api.pick(6, 8, 10);
     const deck = shuffle(shuffle(icons).slice(0, pairs).flatMap(i => [i, i]));
-    const cols = pairs === 6 ? 4 : 4;
-    let flipped = [], moves = 0, matched = 0, lock = false;
+    const cols = pairs === 10 ? 5 : 4;
+    let flipped = [], moves = 0, matched = 0, lock = false, dead = false;
+    const lives = api.lives(api.pick(pairs + 6, pairs + 3, pairs), () => {
+      dead = true;
+      const score = Math.max(10, matched * 40);
+      api.finish({ score, accuracy: moves ? matched/moves*100 : 0, greatAt: zen?400:450, eliteAt: zen?600:700, extra: [['Pairs', matched + '/' + pairs]] });
+    });
     api.hud.set('moves','fa-hand-pointer', 0);
 
     api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(${cols},1fr);width:min(92vw,${pairs===6?'440px':'480px'},70vh)">
@@ -254,7 +337,7 @@
     </div>`;
 
     api.main.querySelectorAll('.tile').forEach(t => t.onclick = () => {
-      if (api.isPaused() || lock) return;
+      if (api.isPaused() || lock || dead) return;
       const i = +t.dataset.i;
       if (flipped.find(f => f.i === i) || t.classList.contains('match')) return;
       t.classList.add('flip');
@@ -276,10 +359,11 @@
           }
         } else {
           lock = true;
+          lives.lose();
           setTimeout(() => {
             [a,b].forEach(f => { f.t.classList.remove('flip'); f.t.querySelector('i').style.opacity = '0'; });
             flipped = []; lock = false;
-          }, 700);
+          }, api.pick(750, 700, 550));
         }
       }
     });
@@ -289,21 +373,27 @@
 
   /* ---------- SEQUENCE RECALL ---------- */
   E['sequence-recall'] = function(api){
-    const n = 9;
-    let seq = [], input = [], round = 0, showing = false;
+    const n = api.pick(9, 9, 16);
+    const cols = n === 16 ? 4 : 3;
+    const speed = api.pick(760, 620, 480);
+    let seq = [], input = [], round = 0, showing = false, bestRound = 0;
+    const lives = api.lives(api.pick(3, 2, 1), () => {
+      const score = Math.max(10, bestRound * 55);
+      api.finish({ score, perfect: false, greatAt: 275, eliteAt: 440, extra: [['Best Round', bestRound]] });
+    });
     api.hud.set('round','fa-layer-group','1');
     api.main.innerHTML = `<div>
       <div class="tc dim mb-4" id="sq-status" style="font-weight:600;letter-spacing:.08em;min-height:20px">WATCH THE SEQUENCE</div>
-      <div class="board" style="grid-template-columns:repeat(3,1fr);width:min(88vw,380px)">
+      <div class="board" style="grid-template-columns:repeat(${cols},1fr);width:min(88vw,380px)">
         ${[...Array(n)].map((_,i) => `<button class="tile" data-i="${i}" aria-label="Tile ${i+1}"></button>`).join('')}
       </div></div>`;
     const tiles = [...api.main.querySelectorAll('.tile')];
     const status = $('#sq-status');
 
-    function playSeq(){
+    function playSeq(extend){
       showing = true; input = [];
       status.textContent = 'WATCH THE SEQUENCE'; status.style.color = '';
-      seq.push(Math.floor(Math.random()*n));
+      if (extend !== false) seq.push(Math.floor(Math.random()*n));
       round = seq.length;
       api.hud.set('round','fa-layer-group', round);
       let i = 0;
@@ -313,7 +403,7 @@
         if (i >= seq.length){ clearInterval(int); showing = false; status.textContent = 'YOUR TURN'; return; }
         setTimeout(() => tiles[seq[i]].classList.add('lit'), 60);
         i++;
-      }, 620);
+      }, speed);
       api.onCleanup(() => clearInterval(int));
     }
 
@@ -325,13 +415,17 @@
       const idx = input.length - 1;
       if (seq[idx] !== i){
         t.classList.add('wrong'); setTimeout(() => t.classList.remove('wrong'), 400);
-        status.textContent = 'SEQUENCE BROKEN'; status.style.color = 'var(--cat-speed)';
-        const score = Math.max(10, (round - 1) * 55);
-        setTimeout(() => api.finish({ score, perfect: false, greatAt: 275, eliteAt: 440, extra: [['Best Round', round-1]] }), 800);
         showing = true;
+        if (lives.lose() > 0){
+          status.textContent = 'LIFE LOST — WATCH AGAIN'; status.style.color = 'var(--cat-speed)';
+          setTimeout(() => playSeq(false), 1100);
+        } else {
+          status.textContent = 'SEQUENCE BROKEN'; status.style.color = 'var(--cat-speed)';
+        }
         return;
       }
       if (input.length === seq.length){
+        bestRound = round;
         status.textContent = 'PERFECT — NEXT ROUND';
         NP.burst(t, '#A855F7', 8);
         setTimeout(playSeq, 900);
@@ -344,7 +438,12 @@
   /* ---------- SIMON ---------- */
   E['simon'] = function(api){
     const colors = ['#34D399','#F43F5E','#FACC15','#3B82F6'];
-    let seq = [], input = [], showing = true;
+    const speed = api.pick(680, 560, 420);
+    let seq = [], input = [], showing = true, bestRound = 0;
+    const lives = api.lives(api.pick(3, 2, 1), () => {
+      const score = Math.max(10, bestRound * 60);
+      api.finish({ score, greatAt: 300, eliteAt: 480, extra: [['Best Round', bestRound]] });
+    });
     api.hud.set('round','fa-layer-group','1');
     api.main.innerHTML = `<div>
       <div class="tc dim mb-4" id="si-status" style="font-weight:600;letter-spacing:.08em">WATCH</div>
@@ -358,17 +457,17 @@
       tiles[i].style.boxShadow = `0 0 34px ${colors[i]}`;
       setTimeout(() => { tiles[i].style.background = colors[i]+'26'; tiles[i].style.boxShadow = ''; }, ms || 340);
     }
-    function playSeq(){
+    function playSeq(extend){
       showing = true; input = [];
       status.textContent = 'WATCH';
-      seq.push(Math.floor(Math.random()*4));
+      if (extend !== false) seq.push(Math.floor(Math.random()*4));
       api.hud.set('round','fa-layer-group', seq.length);
       let i = 0;
       const int = setInterval(() => {
         if (api.isPaused()) return;
         if (i >= seq.length){ clearInterval(int); showing = false; status.textContent = 'REPEAT'; return; }
         glow(seq[i]); i++;
-      }, 560);
+      }, speed);
       api.onCleanup(() => clearInterval(int));
     }
     tiles.forEach(t => t.onclick = () => {
@@ -378,27 +477,34 @@
       input.push(i);
       const idx = input.length - 1;
       if (seq[idx] !== i){
-        status.textContent = 'WRONG PAD';
-        const score = Math.max(10, (seq.length - 1) * 60);
         showing = true;
-        setTimeout(() => api.finish({ score, greatAt: 300, eliteAt: 480, extra: [['Best Round', seq.length - 1]] }), 700);
+        if (lives.lose() > 0){
+          status.textContent = 'LIFE LOST — WATCH AGAIN';
+          setTimeout(() => playSeq(false), 1000);
+        } else status.textContent = 'WRONG PAD';
         return;
       }
-      if (input.length === seq.length){ showing = true; setTimeout(playSeq, 800); }
+      if (input.length === seq.length){ bestRound = seq.length; showing = true; setTimeout(playSeq, 800); }
     });
     setTimeout(playSeq, 700);
   };
 
   /* ---------- NUMBER MEMORY ---------- */
   E['number-memory'] = function(api){
-    let digits = 3, best = 0;
+    let digits = api.pick(2, 3, 4), best = 0, dead = false;
+    const showMult = api.pick(1.3, 1, 0.7);
+    const lives = api.lives(api.pick(3, 2, 1), () => {
+      dead = true;
+      const score = Math.max(10, best * 70);
+      api.finish({ score, greatAt: 420, eliteAt: 630, extra: [['Digit Span', best]] });
+    });
     api.hud.set('digits','fa-hashtag', digits);
     function round(){
       const num = [...Array(digits)].map((_,i) => Math.floor(Math.random() * (i ? 10 : 9)) + (i ? 0 : 1)).join('');
       api.main.innerHTML = `<div class="tc">
         <div class="dim mb-4" style="font-weight:600;letter-spacing:.1em">MEMORIZE</div>
         <div style="font-family:var(--font-display);font-weight:900;font-size:clamp(38px,9vw,64px);letter-spacing:.14em" id="nm-num">${num}</div>
-        <div class="xp-bar mt-5" style="width:min(70vw,280px);margin:24px auto 0"><i id="nm-bar" style="width:100%;transition:width ${1200 + digits*420}ms linear"></i></div>
+        <div class="xp-bar mt-5" style="width:min(70vw,280px);margin:24px auto 0"><i id="nm-bar" style="width:100%;transition:width ${Math.round((1200 + digits*420)*showMult)}ms linear"></i></div>
       </div>`;
       requestAnimationFrame(() => requestAnimationFrame(() => { const b = $('#nm-bar'); if (b) b.style.width = '0%'; }));
       const t = setTimeout(() => {
@@ -410,19 +516,20 @@
         </div>`;
         const inp = $('#nm-in'); inp.focus();
         function submit(){
+          if (dead) return;
           if (inp.value.trim() === num){
-            best = digits; digits++;
+            best = Math.max(best, digits); digits++;
             api.hud.set('digits','fa-hashtag', digits);
             NP.toast(`${best} digits — correct!`, 'fa-brain');
             round();
-          } else {
-            const score = Math.max(10, best * 70);
-            api.finish({ score, greatAt: 420, eliteAt: 630, extra: [['Digit Span', best]] });
+          } else if (lives.lose() > 0){
+            NP.toast(`It was ${num} — life lost`, 'fa-heart-crack');
+            round();
           }
         }
         $('#nm-go').onclick = submit;
         inp.onkeydown = e => { if (e.key === 'Enter') submit(); };
-      }, 1400 + digits * 420);
+      }, Math.round((1400 + digits * 420) * showMult));
       api.onCleanup(() => clearTimeout(t));
     }
     round();
@@ -430,15 +537,20 @@
 
   /* ---------- VISUAL MEMORY ---------- */
   E['visual-memory'] = function(api){
-    let level = 1, lives = 3;
-    function renderLives(){
-      api.bottom.innerHTML = `<div class="lives" aria-label="${lives} lives left">${[0,1,2].map(i => `<i class="fa-solid fa-heart ${i >= lives ? 'lost' : ''}"></i>`).join('')}</div>`;
-    }
+    let level = 1, dead = false;
+    const startAdd = api.pick(0, 1, 2);
+    const showMult = api.pick(1.3, 1, 0.7);
+    const missAllowed = api.pick(3, 3, 2);
+    const lives = api.lives(api.pick(4, 3, 2), () => {
+      dead = true;
+      const score = Math.max(10, (level-1) * 65);
+      api.finish({ score, greatAt: 320, eliteAt: 520, extra: [['Level', level-1]] });
+    });
     api.hud.set('level','fa-layer-group', 1);
-    renderLives();
     function round(){
-      const size = Math.min(7, 3 + Math.floor(level / 2));
-      const count = Math.min(size*size - 2, 2 + level);
+      if (dead) return;
+      const size = Math.min(7, 3 + Math.floor((level + startAdd) / 2));
+      const count = Math.min(size*size - 2, 2 + level + startAdd);
       const lit = shuffle([...Array(size*size).keys()]).slice(0, count);
       api.hud.set('level','fa-layer-group', level);
       api.main.innerHTML = `<div>
@@ -453,7 +565,7 @@
         lit.forEach(i => tiles[i].classList.remove('lit'));
         $('#vm-st').textContent = 'TAP EVERY LIT TILE';
         active = true;
-      }, 900 + count * 220);
+      }, Math.round((900 + count * 220) * showMult));
       api.onCleanup(() => clearTimeout(t));
       tiles.forEach(tile => tile.onclick = () => {
         if (!active || api.isPaused()) return;
@@ -470,14 +582,9 @@
           }
         } else {
           tile.classList.add('wrong'); misses++;
-          if (misses >= 3){
+          if (misses >= missAllowed){
             active = false;
-            lives--;
-            renderLives();
-            if (lives <= 0){
-              const score = Math.max(10, (level-1) * 65);
-              setTimeout(() => api.finish({ score, greatAt: 320, eliteAt: 520, extra: [['Level', level-1]] }), 600);
-            } else setTimeout(round, 700);
+            if (lives.lose() > 0) setTimeout(round, 700);
           }
         }
       });
@@ -487,46 +594,56 @@
 
   /* ---------- SCHULTE TABLE ---------- */
   E['schulte'] = function(api){
-    const nums = shuffle([...Array(25)].map((_,i) => i+1));
-    let next = 1, errs = 0;
+    const SZ = api.pick(4, 5, 6);
+    const total = SZ * SZ;
+    const nums = shuffle([...Array(total)].map((_,i) => i+1));
+    let next = 1, errs = 0, dead = false;
     const t0 = Date.now();
+    const lives = api.lives(api.pick(6, 4, 3), () => {
+      dead = true;
+      clearInterval(int);
+      const score = Math.max(10, (next-1) * 25);
+      api.finish({ score, accuracy: (next-1)/(next-1+errs)*100 || 0, greatAt: 700, eliteAt: 1050, extra: [['Found', next-1]] });
+    });
     api.hud.set('find','fa-magnifying-glass','1');
     const int = setInterval(() => { if (!api.isPaused()) api.hud.set('time','fa-stopwatch', NP.fmtTime((Date.now()-t0)/1000)); }, 250);
     api.onCleanup(() => clearInterval(int));
-    api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(5,1fr);width:min(90vw,440px,66vh)">
-      ${nums.map(n => `<button class="tile" data-n="${n}" style="font-size:clamp(17px,4vw,24px)">${n}</button>`).join('')}
+    api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(${SZ},1fr);width:min(90vw,${360+SZ*16}px,66vh)">
+      ${nums.map(n => `<button class="tile" data-n="${n}" style="font-size:clamp(15px,3.6vw,22px)">${n}</button>`).join('')}
     </div>`;
     api.main.querySelectorAll('.tile').forEach(t => t.onclick = () => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       const n = +t.dataset.n;
       if (n === next){
         t.classList.add('match','pop');
         next++;
-        api.hud.set('find','fa-magnifying-glass', next <= 25 ? next : '✓');
-        if (next > 25){
+        api.hud.set('find','fa-magnifying-glass', next <= total ? next : '✓');
+        if (next > total){
           clearInterval(int);
           const secs = (Date.now()-t0)/1000;
-          const score = Math.max(20, Math.round(3400 / secs * 10));
-          api.finish({ score, perfect: errs === 0, accuracy: 25/(25+errs)*100, greatAt: 700, eliteAt: 1050, extra: [['Errors', errs]] });
+          const score = Math.max(20, Math.round(total * 136 / secs));
+          api.finish({ score, perfect: errs === 0, accuracy: total/(total+errs)*100, greatAt: 700, eliteAt: 1050, extra: [['Errors', errs]] });
         }
-      } else { t.classList.add('wrong'); setTimeout(() => t.classList.remove('wrong'), 380); errs++; }
+      } else { t.classList.add('wrong'); setTimeout(() => t.classList.remove('wrong'), 380); errs++; lives.lose(); }
     });
   };
 
   /* ---------- STROOP / COLOR RUSH ---------- */
   function stroopEngine(api, isRush){
     const COLORS = [['RED','#F43F5E'],['BLUE','#3B82F6'],['GREEN','#34D399'],['YELLOW','#FACC15']];
-    let score = 0, streak = 0, correct = 0, total = 0, timeLeft = 45;
+    let score = 0, streak = 0, correct = 0, total = 0, dead = false, timeLeft = api.pick(60, 45, 35);
+    const done = () => {
+      clearInterval(int);
+      api.finish({ score, accuracy: total ? correct/total*100 : 0, perfect: total >= 10 && correct === total, greatAt: 260, eliteAt: 460 });
+    };
+    const lives = api.lives(api.pick(6, 4, 3), () => { dead = true; done(); });
     api.hud.set('score','fa-star', 0);
     api.hud.set('time','fa-stopwatch', timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch', timeLeft);
-      if (timeLeft <= 0){
-        clearInterval(int);
-        api.finish({ score, accuracy: total ? correct/total*100 : 0, perfect: total >= 10 && correct === total, greatAt: 260, eliteAt: 460 });
-      }
+      if (timeLeft <= 0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
 
@@ -541,6 +658,7 @@
       $('#st-card').classList.remove('pop'); void $('#st-card').offsetWidth; $('#st-card').classList.add('pop');
     }
     function answer(saysMatch){
+      if (dead) return;
       total++;
       const right = isRush ? (saysMatch === cur.match) : saysMatch(cur);
       if (right){
@@ -548,9 +666,13 @@
         const mult = 1 + Math.min(3, Math.floor(streak/5));
         score += 10 * mult;
         if (streak % 10 === 0) NP.burst($('#st-card'), '#22D3EE', 10);
-      } else { streak = 0; score = Math.max(0, score - 5); $('#st-card').classList.add('wrong'); setTimeout(()=>$('#st-card').classList.remove('wrong'),300); }
+      } else {
+        streak = 0; score = Math.max(0, score - 5);
+        $('#st-card').classList.add('wrong'); setTimeout(()=>$('#st-card').classList.remove('wrong'),300);
+        lives.lose();
+      }
       api.hud.set('score','fa-star', score);
-      nextCard();
+      if (!dead) nextCard();
     }
     if (isRush){
       api.main.innerHTML = `<div class="tc" style="width:min(90vw,420px)">
@@ -587,9 +709,18 @@
 
   /* ---------- REACTION TIME ---------- */
   E['reaction'] = function(api){
+    const ROUNDS = api.pick(4, 5, 6);
+    const minDelay = api.pick(1200, 1200, 900);
+    const spread = api.pick(2200, 2600, 3400);
     const times = [];
-    let state = 'idle', t0 = 0, timeout = null;
-    api.hud.set('round','fa-flag-checkered','1/5');
+    let state = 'idle', t0 = 0, timeout = null, dead = false;
+    const lives = api.lives(api.pick(4, 3, 2), () => {
+      dead = true;
+      const avg = times.length ? Math.round(times.reduce((a,b)=>a+b,0)/times.length) : 999;
+      const score = times.length ? Math.max(10, Math.round(9000 / avg * 10 * times.length / ROUNDS)) : 10;
+      api.finish({ score, reactionMs: times.length ? avg : 0, greatAt: 300, eliteAt: 380, extra: [['Rounds', times.length + '/' + ROUNDS]] });
+    });
+    api.hud.set('round','fa-flag-checkered','1/' + ROUNDS);
     api.main.innerHTML = `
       <button id="rx-pad" style="width:min(90vw,480px);height:min(60vh,420px);border-radius:28px;background:var(--surface-1);border:1px solid rgba(255,255,255,.08);display:grid;place-items:center;transition:background .15s" aria-label="Reaction pad">
         <div class="tc">
@@ -608,18 +739,19 @@
         pad.style.background = '#0F3D2E';
         pad.style.boxShadow = '0 0 60px rgba(52,211,153,.4)';
         main.textContent = 'TAP NOW!';
-      }, 1200 + Math.random()*2600);
+      }, minDelay + Math.random()*spread);
       api.onCleanup(() => clearTimeout(timeout));
     }
     pad.onclick = () => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       if (state === 'idle'){ arm(); return; }
       if (state === 'waiting'){
         clearTimeout(timeout);
         pad.style.background = 'var(--surface-1)';
         main.textContent = 'TOO EARLY';
-        sub.textContent = 'Tap to retry this round';
+        sub.textContent = 'Life lost — tap to retry';
         state = 'idle';
+        lives.lose();
         return;
       }
       if (state === 'go'){
@@ -627,8 +759,8 @@
         times.push(ms);
         pad.style.background = 'var(--surface-1)';
         pad.style.boxShadow = '';
-        api.hud.set('round','fa-flag-checkered', `${Math.min(times.length+1,5)}/5`);
-        if (times.length >= 5){
+        api.hud.set('round','fa-flag-checkered', `${Math.min(times.length+1,ROUNDS)}/${ROUNDS}`);
+        if (times.length >= ROUNDS){
           const avg = Math.round(times.reduce((a,b)=>a+b,0) / times.length);
           const bestMs = Math.min(...times);
           const score = Math.max(20, Math.round(9000 / avg * 10));
@@ -644,28 +776,31 @@
 
   /* ---------- FIND THE TARGET ---------- */
   E['find-target'] = function(api){
-    let round = 1, score = 0, timeLeft = 40;
+    let round = 1, score = 0, dead = false, timeLeft = api.pick(50, 40, 32);
+    const baseDiff = api.pick(32, 26, 19);
+    const done = () => { clearInterval(int); api.finish({ score, greatAt: 240, eliteAt: 420, extra: [['Rounds', round-1]] }); };
+    const lives = api.lives(api.pick(6, 4, 3), () => { dead = true; done(); });
     api.hud.set('score','fa-star',0);
     api.hud.set('time','fa-stopwatch', timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch', timeLeft);
-      if (timeLeft <= 0){ clearInterval(int); api.finish({ score, greatAt: 240, eliteAt: 420, extra: [['Rounds', round-1]] }); }
+      if (timeLeft <= 0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
     function draw(){
       const size = Math.min(8, 3 + Math.floor(round/3));
       const hue = Math.floor(Math.random()*360);
-      const diff = Math.max(5, 26 - round*1.6);
+      const diff = Math.max(5, baseDiff - round*1.6);
       const target = Math.floor(Math.random()*size*size);
       api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(${size},1fr);width:min(90vw,480px,64vh);gap:6px">
         ${[...Array(size*size)].map((_,i) => `<button class="tile" data-t="${i===target?1:0}" style="background:hsl(${hue} 55% ${i===target ? 38+diff/2 : 38}%);border:none" aria-label="tile"></button>`).join('')}
       </div>`;
       api.main.querySelectorAll('.tile').forEach(t => t.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         if (t.dataset.t === '1'){ score += 8 + round*2; round++; api.hud.set('score','fa-star',score); NP.burst(t,'#22D3EE',6); draw(); }
-        else { t.classList.add('wrong'); score = Math.max(0, score-4); api.hud.set('score','fa-star',score); }
+        else { t.classList.add('wrong'); score = Math.max(0, score-4); api.hud.set('score','fa-star',score); lives.lose(); }
       });
     }
     draw();
@@ -673,14 +808,16 @@
 
   /* ---------- MENTAL MATH ---------- */
   E['mental-math'] = function(api){
-    let score = 0, streak = 0, correct = 0, total = 0, timeLeft = 60, level = 1;
+    let score = 0, streak = 0, correct = 0, total = 0, dead = false, timeLeft = api.pick(75, 60, 45), level = api.pick(1, 3, 8);
+    const done = () => { clearInterval(int); api.finish({ score, accuracy: total?correct/total*100:0, greatAt: 300, eliteAt: 520, extra: [['Solved', correct]] }); };
+    const lives = api.lives(api.pick(5, 3, 2), () => { dead = true; done(); });
     api.hud.set('score','fa-star',0);
     api.hud.set('time','fa-stopwatch',timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch',timeLeft);
-      if (timeLeft <= 0){ clearInterval(int); api.finish({ score, accuracy: total?correct/total*100:0, greatAt: 300, eliteAt: 520, extra: [['Solved', correct]] }); }
+      if (timeLeft <= 0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
     function gen(){
@@ -706,7 +843,7 @@
           ${q.opts.map(o => `<button class="tile" data-a="${o}" style="aspect-ratio:auto;padding:20px;font-size:24px">${o}</button>`).join('')}
         </div></div>`;
       api.main.querySelectorAll('.tile').forEach(t => t.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         total++;
         if (+t.dataset.a === q.ans){
           correct++; streak++; level++;
@@ -714,7 +851,7 @@
           t.classList.add('match');
           api.hud.set('score','fa-star',score);
           setTimeout(draw, 160);
-        } else { streak = 0; t.classList.add('wrong'); score = Math.max(0, score-5); api.hud.set('score','fa-star',score); }
+        } else { streak = 0; t.classList.add('wrong'); score = Math.max(0, score-5); api.hud.set('score','fa-star',score); lives.lose(); }
       });
     }
     draw();
@@ -722,21 +859,26 @@
 
   /* ---------- NEURAL 2048 ---------- */
   E['neural-2048'] = function(api){
-    const N = 4;
+    const N = api.pick(5, 4, 4);
+    const fourChance = api.pick(0.06, 0.1, 0.22);
     let grid = [...Array(N)].map(() => Array(N).fill(0));
     let score = 0, moved = false, over = false;
+    const lives = api.lives(api.pick(3, 2, 1), () => {
+      over = true;
+      setTimeout(() => api.finish({ score, greatAt: 1200, eliteAt: 3000, extra: [['Top Tile', Math.max(...grid.flat())]] }), 400);
+    });
     api.hud.set('score','fa-star',0);
     function addTile(){
       const empty = [];
       grid.forEach((row,y) => row.forEach((v,x) => { if (!v) empty.push([x,y]); }));
       if (!empty.length) return;
       const [x,y] = empty[Math.floor(Math.random()*empty.length)];
-      grid[y][x] = Math.random() < 0.9 ? 2 : 4;
+      grid[y][x] = Math.random() < 1 - fourChance ? 2 : 4;
     }
     addTile(); addTile();
     const COLORS = {2:'#2A3242',4:'#33405A',8:'#2E7CF6',16:'#4A6CF7',32:'#7C3AED',64:'#A855F7',128:'#EC4899',256:'#F43F5E',512:'#F97316',1024:'#FACC15',2048:'#34D399'};
     function render(newPos){
-      api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(4,1fr);width:min(90vw,420px,58vh);background:rgba(255,255,255,.04);padding:10px;border-radius:18px;gap:10px" tabindex="0" id="g2048" aria-label="2048 board">
+      api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(${N},1fr);width:min(90vw,420px,58vh);background:rgba(255,255,255,.04);padding:10px;border-radius:18px;gap:${N===5?'8px':'10px'}" tabindex="0" id="g2048" aria-label="2048 board">
         ${grid.flatMap((row,y) => row.map((v,x) => {
           const isNew = newPos && newPos[0]===x && newPos[1]===y;
           return `<div class="tile ${isNew?'pop':''}" style="cursor:default;font-size:${v>=1024?'clamp(15px,4vw,22px)':v>=128?'clamp(17px,4.6vw,26px)':'clamp(20px,5.4vw,30px)'};background:${v?COLORS[v]||'#34D399':'rgba(255,255,255,.03)'};${v>=8?'color:#fff;box-shadow:0 0 18px '+(COLORS[v]||'#34D399')+'55;':'color:var(--text-mid);'}border:none">${v||''}</div>`;
@@ -770,8 +912,12 @@
         api.hud.set('score','fa-star',score);
         render();
         if (isOver()){
-          over = true;
-          setTimeout(() => api.finish({ score, greatAt: 1200, eliteAt: 3000, extra: [['Top Tile', Math.max(...grid.flat())]] }), 500);
+          if (lives.lose() > 0){
+            // second chance: clear the small tiles and keep going
+            grid = grid.map(r => r.map(v => v <= 4 ? 0 : v));
+            NP.toast('Life used — small tiles cleared!', 'fa-heart-crack');
+            render();
+          }
         }
       }
     }
@@ -829,10 +975,15 @@
     }
     const sol = genFull();
     const puzzle = sol.map(r => r.slice());
-    shuffle([...Array(N*N).keys()]).slice(0, 18).forEach(p => { puzzle[Math.floor(p/N)][p%N] = 0; });
-    let sel = null, mistakes = 0, filled = 0;
+    shuffle([...Array(N*N).keys()]).slice(0, api.pick(14, 18, 24)).forEach(p => { puzzle[Math.floor(p/N)][p%N] = 0; });
+    let sel = null, mistakes = 0, filled = 0, dead = false;
     const need = puzzle.flat().filter(v => !v).length;
     const t0 = Date.now();
+    const lives = api.lives(api.pick(5, 3, 2), () => {
+      dead = true;
+      const score = Math.max(20, filled * 30);
+      setTimeout(() => api.finish({ score, greatAt: 1400, eliteAt: 2100 }), 400);
+    });
     api.hud.set('left','fa-border-all', need);
     function render(){
       api.main.innerHTML = `<div style="width:min(92vw,430px)">
@@ -849,9 +1000,8 @@
           ${[1,2,3,4,5,6].map(n => `<button class="tile" data-n="${n}" style="width:48px;height:48px;aspect-ratio:auto;font-size:19px">${n}</button>`).join('')}
         </div>
       </div>`;
-      api.bottom.innerHTML = `<div class="lives">${[0,1,2].map(i => `<i class="fa-solid fa-heart ${i >= 3-mistakes ? 'lost':''}"></i>`).join('')}</div>`;
       api.main.querySelectorAll('[data-y]').forEach(c => c.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         const y = +c.dataset.y, x = +c.dataset.x;
         if (puzzle[y][x] === 0 || (sel && sel.user && sel.user[y+','+x])){
           sel = Object.assign(sel || {user:{}}, { y, x });
@@ -859,7 +1009,7 @@
         }
       });
       api.main.querySelectorAll('[data-n]').forEach(b => b.onclick = () => {
-        if (api.isPaused() || !sel || sel.y == null) return;
+        if (api.isPaused() || dead || !sel || sel.y == null) return;
         const { y, x } = sel;
         if (puzzle[y][x] !== 0 && !sel.user[y+','+x]) return;
         const v = +b.dataset.n;
@@ -879,11 +1029,7 @@
         } else {
           mistakes++;
           b.classList.add('wrong');
-          api.bottom.innerHTML = `<div class="lives">${[0,1,2].map(i => `<i class="fa-solid fa-heart ${i >= 3-mistakes ? 'lost':''}"></i>`).join('')}</div>`;
-          if (mistakes >= 3){
-            const score = Math.max(20, filled * 30);
-            setTimeout(() => api.finish({ score, greatAt: 1400, eliteAt: 2100 }), 500);
-          }
+          lives.lose();
         }
       });
     }
@@ -892,9 +1038,16 @@
 
   /* ---------- MINESWEEPER ---------- */
   E['minesweeper'] = function(api){
-    const N = 8, MINES = 9;
+    const N = api.pick(7, 8, 9), MINES = api.pick(6, 9, 14);
     let mines = new Set(), revealed = new Set(), flags = new Set(), started = false, flagMode = false, done = false;
     const t0 = Date.now();
+    const lives = api.lives(api.pick(2, 1, 1), () => {
+      done = true;
+      mines.forEach(m => revealed.add(m));
+      render();
+      const score = Math.max(10, Math.round((revealed.size - MINES) * 8));
+      setTimeout(() => api.finish({ score, greatAt: 300, eliteAt: 440 }), 900);
+    });
     api.hud.set('mines','fa-bomb', MINES);
     function neighbors(i){
       const y = Math.floor(i/N), x = i%N, out = [];
@@ -939,15 +1092,18 @@
         }
         if (!started){ started = true; plant(i); }
         if (mines.has(i)){
-          done = true;
-          mines.forEach(m => revealed.add(m));
-          render();
-          const score = Math.max(10, Math.round((revealed.size - MINES) * 8));
-          setTimeout(() => api.finish({ score, greatAt: 300, eliteAt: 440 }), 900);
+          if (lives.lose() > 0){
+            // survived: defuse this mine and mark it
+            mines.delete(i);
+            flags.add(i);
+            NP.toast('Mine defused — life lost!', 'fa-heart-crack');
+            api.hud.set('mines','fa-bomb', Math.max(0, mines.size - flags.size + 1));
+            render();
+          }
           return;
         }
         reveal(i);
-        if (revealed.size === N*N - MINES){
+        if (revealed.size >= N*N - mines.size){
           done = true;
           render();
           const secs = (Date.now()-t0)/1000;
@@ -963,11 +1119,16 @@
 
   /* ---------- TOWER OF HANOI ---------- */
   E['hanoi'] = function(api){
-    const DISCS = 5;
-    let towers = [[5,4,3,2,1],[],[]], held = null, moves = 0;
+    const DISCS = api.pick(4, 5, 6);
+    let towers = [[...Array(DISCS)].map((_,i) => DISCS - i),[],[]], held = null, moves = 0, dead = false;
     const minMoves = Math.pow(2, DISCS) - 1;
+    const lives = api.lives(api.pick(6, 4, 3), () => {
+      dead = true;
+      const score = Math.max(10, towers[2].length * 40);
+      setTimeout(() => api.finish({ score, greatAt: 700, eliteAt: 950, extra: [['Moves', moves]] }), 400);
+    });
     api.hud.set('moves','fa-arrows-left-right', 0);
-    const DC = ['#2E7CF6','#7C3AED','#EC4899','#F97316','#FACC15'];
+    const DC = ['#2E7CF6','#7C3AED','#EC4899','#F97316','#FACC15','#34D399'];
     function render(){
       api.main.innerHTML = `<div style="width:min(94vw,560px)">
         <div class="tc dim mb-4" style="font-size:12px;letter-spacing:.06em">MOVE ALL DISCS TO THE RIGHT TOWER · MIN ${minMoves} MOVES</div>
@@ -977,12 +1138,12 @@
               <div style="position:absolute;top:10%;bottom:14px;width:5px;background:rgba(255,255,255,.08);border-radius:3px"></div>
               ${tw.map((d,di) => {
                 const isHeld = held && held.from === ti && di === tw.length-1;
-                return `<div style="width:${28+d*13}%;height:20px;border-radius:8px;background:${DC[d-1]};box-shadow:0 3px 10px rgba(0,0,0,.4)${isHeld ? ',0 0 20px '+DC[d-1] : ''};z-index:1;transition:all .2s;${isHeld?'transform:translateY(-10px);':''}"></div>`;
+                return `<div style="width:${Math.min(96, 24 + d * Math.floor(72/DISCS))}%;height:20px;border-radius:8px;background:${DC[d-1]};box-shadow:0 3px 10px rgba(0,0,0,.4)${isHeld ? ',0 0 20px '+DC[d-1] : ''};z-index:1;transition:all .2s;${isHeld?'transform:translateY(-10px);':''}"></div>`;
               }).join('')}
             </button>`).join('')}
         </div></div>`;
       api.main.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         const ti = +b.dataset.t;
         if (held === null){
           if (towers[ti].length){ held = { from: ti, disc: towers[ti][towers[ti].length-1] }; render(); }
@@ -1004,6 +1165,7 @@
           render();
         } else {
           b.style.borderColor = 'rgba(244,63,94,.6)';
+          lives.lose();
           setTimeout(render, 250);
         }
       });
@@ -1013,12 +1175,12 @@
 
   /* ---------- SLIDING PUZZLE ---------- */
   E['sliding-puzzle'] = function(api){
-    const N = 4;
-    let tiles;
+    const N = api.pick(3, 4, 5);
+    const LAST = N*N - 1;
     // generate solvable shuffle by random moves from solved
-    tiles = [...Array(15).keys()].map(i => i+1).concat(0);
-    let gap = 15;
-    for (let k=0;k<300;k++){
+    let tiles = [...Array(LAST).keys()].map(i => i+1).concat(0);
+    let gap = LAST;
+    for (let k=0;k<N*N*22;k++){
       const y = Math.floor(gap/N), x = gap%N;
       const opts = [];
       if (y>0) opts.push(gap-N); if (y<N-1) opts.push(gap+N);
@@ -1027,19 +1189,26 @@
       [tiles[gap], tiles[pick]] = [tiles[pick], tiles[gap]];
       gap = pick;
     }
-    let moves = 0;
+    let moves = 0, dead = false;
+    const budget = N*N*14; // moves per life
     const t0 = Date.now();
+    const lives = api.lives(api.pick(4, 3, 2), () => {
+      dead = true;
+      const placed = tiles.filter((v,i) => v && v === i+1).length;
+      const score = Math.max(10, placed * 25);
+      setTimeout(() => api.finish({ score, greatAt: 1100, eliteAt: 1650, extra: [['Placed', placed]] }), 400);
+    });
     api.hud.set('moves','fa-arrows-up-down-left-right', 0);
-    function solved(){ return tiles.every((v,i) => (i === 15 ? v === 0 : v === i+1)); }
+    function solved(){ return tiles.every((v,i) => (i === LAST ? v === 0 : v === i+1)); }
     function render(){
-      api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(4,1fr);width:min(90vw,420px,58vh)">
+      api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(${N},1fr);width:min(90vw,420px,58vh)">
         ${tiles.map((v,i) => v === 0
           ? `<div style="aspect-ratio:1"></div>`
-          : `<button class="tile" data-i="${i}" style="font-size:clamp(18px,5vw,26px);${v === i+1 ? 'background:var(--accent-soft);border-color:rgba(46,124,246,.35);color:var(--accent);' : ''}">${v}</button>`
+          : `<button class="tile" data-i="${i}" style="font-size:clamp(16px,4.6vw,24px);${v === i+1 ? 'background:var(--accent-soft);border-color:rgba(46,124,246,.35);color:var(--accent);' : ''}">${v}</button>`
         ).join('')}
       </div>`;
       api.main.querySelectorAll('.tile').forEach(t => t.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         const i = +t.dataset.i;
         const g = tiles.indexOf(0);
         const adj = (Math.abs(i-g) === 1 && Math.floor(i/N) === Math.floor(g/N)) || Math.abs(i-g) === N;
@@ -1047,6 +1216,10 @@
           [tiles[i], tiles[g]] = [tiles[g], tiles[i]];
           moves++;
           api.hud.set('moves','fa-arrows-up-down-left-right', moves);
+          if (moves > 0 && moves % budget === 0 && !solved()){
+            NP.toast('Move budget spent — life lost!', 'fa-heart-crack');
+            if (lives.lose() <= 0) return;
+          }
           if (solved()){
             const secs = (Date.now()-t0)/1000;
             const score = Math.max(60, Math.round(2200 - moves*6 - secs*2));
@@ -1063,7 +1236,7 @@
 
   /* ---------- MAZE ---------- */
   E['maze'] = function(api){
-    const N = 11; // odd
+    const N = api.pick(9, 11, 15); // odd
     // recursive backtracker
     const walls = [...Array(N)].map(() => Array(N).fill(1));
     function carve(y, x){
@@ -1077,10 +1250,16 @@
       });
     }
     carve(1,1);
-    let py = 1, px = 1, steps = 0;
+    let py = 1, px = 1, steps = 0, dead = false;
     const goal = [N-2, N-2];
     walls[goal[0]][goal[1]] = 0;
     const t0 = Date.now();
+    const budget = N * N; // steps per life
+    const lives = api.lives(api.pick(4, 3, 2), () => {
+      dead = true;
+      const score = Math.max(10, Math.round((py + px) / (2*(N-2)) * 200));
+      setTimeout(() => api.finish({ score, greatAt: 800, eliteAt: 1100, extra: [['Steps', steps]] }), 400);
+    });
     api.hud.set('steps','fa-shoe-prints', 0);
     function render(){
       api.main.innerHTML = `<div class="board" style="grid-template-columns:repeat(${N},1fr);width:min(92vw,480px,64vh);gap:2px">
@@ -1091,10 +1270,15 @@
       </div>`;
     }
     function move(dy,dx){
+      if (dead) return;
       const ny = py+dy, nx = px+dx;
       if (ny<0||ny>=N||nx<0||nx>=N||walls[ny][nx]) return;
       py = ny; px = nx; steps++;
       api.hud.set('steps','fa-shoe-prints', steps);
+      if (steps > 0 && steps % budget === 0 && !(py===goal[0] && px===goal[1])){
+        NP.toast('Step budget spent — life lost!', 'fa-heart-crack');
+        if (lives.lose() <= 0){ render(); return; }
+      }
       render();
       if (py===goal[0] && px===goal[1]){
         const secs = (Date.now()-t0)/1000;
@@ -1124,14 +1308,16 @@
 
   /* ---------- MENTAL ROTATION ---------- */
   E['mental-rotation'] = function(api){
-    let score = 0, correct = 0, total = 0, timeLeft = 45;
+    let score = 0, correct = 0, total = 0, dead = false, timeLeft = api.pick(60, 45, 35);
+    const done = () => { clearInterval(int); api.finish({ score, accuracy: total?correct/total*100:0, greatAt: 200, eliteAt: 360 }); };
+    const lives = api.lives(api.pick(6, 4, 3), () => { dead = true; done(); });
     api.hud.set('score','fa-star',0);
     api.hud.set('time','fa-stopwatch',timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch',timeLeft);
-      if (timeLeft<=0){ clearInterval(int); api.finish({ score, accuracy: total?correct/total*100:0, greatAt: 200, eliteAt: 360 }); }
+      if (timeLeft<=0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
     const SHAPES = [
@@ -1160,12 +1346,12 @@
         <div class="dim mt-4" style="font-size:12px">Is the green shape a rotation of the blue — or a mirror image?</div>
       </div>`;
       api.main.querySelectorAll('[data-m]').forEach(b => b.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         total++;
         if ((+b.dataset.m === 1) === mirror){ correct++; score += 15; NP.burst(b,'#34D399',6); }
-        else { score = Math.max(0, score-6); b.classList.add('wrong'); }
+        else { score = Math.max(0, score-6); b.classList.add('wrong'); lives.lose(); }
         api.hud.set('score','fa-star',score);
-        setTimeout(draw, 220);
+        if (!dead) setTimeout(draw, 220);
       });
     }
     draw();
@@ -1175,11 +1361,13 @@
   E['word-guess'] = function(api){
     const WORDS = ['BRAIN','LOGIC','FOCUS','SPARK','QUICK','THINK','SOLVE','LEARN','SMART','SIGHT','SOUND','TRAIN','POWER','FLAME','CHESS','PIXEL','NEURO','SHARP','SPEED','STORM','LIGHT','DREAM','SENSE','GRAPH','PRIME'];
     const answer = WORDS[Math.floor(Math.random()*WORDS.length)];
+    const TRIES = api.pick(8, 6, 4);
     let row = 0, cur = '';
-    const grid = [...Array(6)].map(() => Array(5).fill(''));
-    const states = [...Array(6)].map(() => Array(5).fill(''));
+    const grid = [...Array(TRIES)].map(() => Array(5).fill(''));
+    const states = [...Array(TRIES)].map(() => Array(5).fill(''));
     const keyState = {};
-    api.hud.set('try','fa-lightbulb','1/6');
+    const lives = api.lives(TRIES, null); // each wrong guess = one life
+    api.hud.set('try','fa-lightbulb','1/' + TRIES);
     function evaluate(guess){
       const res = Array(5).fill('absent');
       const rem = {};
@@ -1211,7 +1399,7 @@
       api.main.querySelectorAll('[data-k]').forEach(b => b.onclick = () => press(b.dataset.k));
     }
     function press(k){
-      if (api.isPaused() || row >= 6) return;
+      if (api.isPaused() || row >= TRIES) return;
       if (k === '⌫'){ cur = cur.slice(0,-1); }
       else if (k === '⏎'){
         if (cur.length !== 5) return;
@@ -1223,14 +1411,15 @@
         });
         if (cur === answer){
           render();
-          const score = Math.max(80, (7 - (row+1)) * 140);
+          const score = Math.max(80, (TRIES + 1 - (row+1)) * Math.round(840/TRIES));
           setTimeout(() => api.finish({ score, perfect: row === 0, greatAt: 420, eliteAt: 700, extra: [['Guesses', row+1]] }), 700);
-          row = 6;
+          row = TRIES;
           return;
         }
+        lives.lose();
         row++; cur = '';
-        api.hud.set('try','fa-lightbulb', `${Math.min(row+1,6)}/6`);
-        if (row >= 6){
+        api.hud.set('try','fa-lightbulb', `${Math.min(row+1,TRIES)}/${TRIES}`);
+        if (row >= TRIES){
           render();
           NP.toast(`The word was ${answer}`, 'fa-book');
           setTimeout(() => api.finish({ score: 30, greatAt: 420, eliteAt: 700, extra: [['Word', answer]] }), 1300);
@@ -1253,15 +1442,20 @@
 
   /* ---------- ANAGRAM ---------- */
   E['anagram'] = function(api){
-    const WORDS = ['PLANET','MEMORY','GARDEN','SILVER','ROCKET','PUZZLE','WISDOM','ORANGE','CASTLE','BREEZE','MARBLE','THRONE','KNIGHT','SPIRIT','FOREST','CIRCUS','VELVET','SHADOW','CRYSTAL','THUNDER'];
-    let score = 0, solved = 0, timeLeft = 60, cur = null, picked = [];
+    const EASY = ['PLANET','MEMORY','GARDEN','SILVER','ROCKET','PUZZLE','WISDOM','ORANGE','CASTLE','BREEZE'];
+    const MED = ['MARBLE','THRONE','KNIGHT','SPIRIT','FOREST','CIRCUS','VELVET','SHADOW'];
+    const HARD = ['CRYSTAL','THUNDER','JOURNEY','MYSTERY','HARMONY','VOLCANO','LANTERN','EMERALD'];
+    const WORDS = api.pick(EASY, EASY.concat(MED), MED.concat(HARD));
+    let score = 0, solved = 0, dead = false, timeLeft = api.pick(75, 60, 50), cur = null, picked = [];
+    const done = () => { clearInterval(int); api.finish({ score, greatAt: 250, eliteAt: 450, extra: [['Words', solved]] }); };
+    const lives = api.lives(api.pick(5, 3, 2), () => { dead = true; done(); });
     api.hud.set('score','fa-star',0);
     api.hud.set('time','fa-stopwatch',timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch',timeLeft);
-      if (timeLeft<=0){ clearInterval(int); api.finish({ score, greatAt: 250, eliteAt: 450, extra: [['Words', solved]] }); }
+      if (timeLeft<=0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
     function newWord(){
@@ -1287,7 +1481,7 @@
       </div>`;
       const pool = [...api.main.querySelectorAll('#an-pool .tile')];
       pool.forEach(b => b.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         picked.push(b.dataset.ch + '#' + b.dataset.i);
         b.style.opacity = '.2'; b.style.pointerEvents = 'none';
         renderSlots();
@@ -1301,7 +1495,8 @@
             setTimeout(newWord, 450);
           } else {
             $('#an-slots').querySelectorAll('.tile').forEach(t => t.classList.add('wrong'));
-            setTimeout(() => { picked = []; draw(letters); }, 550);
+            lives.lose();
+            setTimeout(() => { if (!dead){ picked = []; draw(letters); } }, 550);
           }
         }
       });
@@ -1322,14 +1517,17 @@
 
   /* ---------- TAP RACE ---------- */
   E['tap-race'] = function(api){
-    let score = 0, hits = 0, timeLeft = 30;
+    let score = 0, hits = 0, dead = false, timeLeft = api.pick(40, 30, 25);
+    const sizeBase = api.pick(88, 76, 62);
+    const done = () => { clearInterval(int); api.finish({ score, greatAt: 300, eliteAt: 500, extra: [['Hits', hits]] }); };
+    const lives = api.lives(api.pick(8, 5, 3), () => { dead = true; done(); });
     api.hud.set('score','fa-star',0);
     api.hud.set('time','fa-stopwatch',timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch',timeLeft);
-      if (timeLeft<=0){ clearInterval(int); api.finish({ score, greatAt: 300, eliteAt: 500, extra: [['Hits', hits]] }); }
+      if (timeLeft<=0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
     api.main.innerHTML = `<div id="tr-arena" style="position:relative;width:min(94vw,560px);height:min(62vh,480px);background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:24px;overflow:hidden;cursor:crosshair"></div>`;
@@ -1337,7 +1535,7 @@
     function spawn(){
       const old = arena.querySelector('.tr-t');
       if (old) old.remove();
-      const size = Math.max(38, 76 - hits * 1.2);
+      const size = Math.max(38, sizeBase - hits * 1.2);
       const x = Math.random() * (arena.clientWidth - size), y = Math.random() * (arena.clientHeight - size);
       const t = document.createElement('button');
       t.className = 'tr-t';
@@ -1345,9 +1543,9 @@
       t.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:${size}px;height:${size}px;border-radius:50%;background:radial-gradient(circle at 35% 35%, #FF7A94, #F43F5E);box-shadow:0 0 26px rgba(244,63,94,.5);animation:tilePop .25s var(--ease)`;
       t.onclick = e => {
         e.stopPropagation();
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         hits++;
-        score += 10 + Math.max(0, Math.round((76-size)/4));
+        score += 10 + Math.max(0, Math.round((sizeBase-size)/4));
         api.hud.set('score','fa-star',score);
         NP.burst(t, '#F43F5E', 6);
         spawn();
@@ -1355,28 +1553,32 @@
       arena.appendChild(t);
     }
     arena.onclick = () => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       score = Math.max(0, score - 3);
       api.hud.set('score','fa-star',score);
+      lives.lose();
     };
     spawn();
   };
 
   /* ---------- SEQUENCE PREDICTION ---------- */
   E['seq-predict'] = function(api){
-    let score = 0, streak = 0, solved = 0, timeLeft = 60;
+    let score = 0, streak = 0, solved = 0, dead = false, timeLeft = api.pick(75, 60, 45);
+    const kinds = api.pick(2, 4, 4);
+    const done = () => { clearInterval(int); api.finish({ score, greatAt: 220, eliteAt: 400, extra: [['Solved', solved]] }); };
+    const lives = api.lives(api.pick(5, 3, 2), () => { dead = true; done(); });
     api.hud.set('score','fa-star',0);
     api.hud.set('time','fa-stopwatch',timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch',timeLeft);
-      if (timeLeft<=0){ clearInterval(int); api.finish({ score, greatAt: 220, eliteAt: 400, extra: [['Solved', solved]] }); }
+      if (timeLeft<=0) done();
     }, 1000);
     api.onCleanup(() => clearInterval(int));
     function gen(){
       const r = n => Math.floor(Math.random()*n);
-      const kind = r(4);
+      const kind = r(kinds);
       let seq = [], ans;
       if (kind === 0){ // arithmetic
         const a = r(12)+1, d = r(9)+2;
@@ -1406,14 +1608,14 @@
           ${q.opts.map(o => `<button class="tile" data-a="${o}" style="aspect-ratio:auto;padding:18px;font-size:22px">${o}</button>`).join('')}
         </div></div>`;
       api.main.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
-        if (api.isPaused()) return;
+        if (api.isPaused() || dead) return;
         if (+b.dataset.a === q.ans){
           streak++; solved++;
           score += 14 * (1 + Math.min(2, Math.floor(streak/4)));
           b.classList.add('match');
           api.hud.set('score','fa-star',score);
           setTimeout(draw, 200);
-        } else { streak = 0; score = Math.max(0, score-6); b.classList.add('wrong'); api.hud.set('score','fa-star',score); }
+        } else { streak = 0; score = Math.max(0, score-6); b.classList.add('wrong'); api.hud.set('score','fa-star',score); lives.lose(); }
       });
     }
     draw();
@@ -1424,11 +1626,18 @@
     const OBJECTS = ['a brick','a paperclip','a spoon','an old newspaper','a rubber band','a coffee mug','a shoelace','a cardboard box'];
     const obj = OBJECTS[Math.floor(Math.random()*OBJECTS.length)];
     const ideas = [];
-    let timeLeft = 90;
+    let timeLeft = api.pick(120, 90, 60), dead = false;
+    const lives = api.lives(api.pick(5, 3, 2), () => {
+      dead = true;
+      clearInterval(int);
+      const lengthBonus = ideas.reduce((a,b) => a + Math.min(20, b.length), 0);
+      const score = ideas.length * 30 + Math.round(lengthBonus/2);
+      api.finish({ score, greatAt: 180, eliteAt: 330, extra: [['Ideas', ideas.length]] });
+    });
     api.hud.set('ideas','fa-lightbulb',0);
     api.hud.set('time','fa-stopwatch',timeLeft);
     const int = setInterval(() => {
-      if (api.isPaused()) return;
+      if (api.isPaused() || dead) return;
       timeLeft--;
       api.hud.set('time','fa-stopwatch',timeLeft);
       if (timeLeft<=0){
@@ -1453,9 +1662,10 @@
     </div>`;
     const inp = $('#au-in'); inp.focus();
     function add(){
+      if (dead) return;
       const v = inp.value.trim();
-      if (v.length < 3) return;
-      if (ideas.some(i => i.toLowerCase() === v.toLowerCase())){ NP.toast('Already listed!','fa-circle-exclamation'); return; }
+      if (v.length < 3){ if (v.length > 0){ NP.toast('Idea too short — life lost','fa-heart-crack'); lives.lose(); inp.value=''; } return; }
+      if (ideas.some(i => i.toLowerCase() === v.toLowerCase())){ NP.toast('Already listed — life lost!','fa-circle-exclamation'); lives.lose(); return; }
       ideas.push(v);
       api.hud.set('ideas','fa-lightbulb',ideas.length);
       const d = document.createElement('div');
